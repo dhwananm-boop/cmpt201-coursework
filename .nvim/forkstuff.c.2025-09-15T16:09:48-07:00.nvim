@@ -1,0 +1,13 @@
+#include <stdio.h>
+#include <unistd.h>
+
+int main() {
+  for(int i = 0; i < 4; i++)
+  {
+    printf("Start PID: %5d parent_PID: %5d\n", getpid(), getppid());
+    fork();
+  }
+ 
+  printf("PID: %5d\n", getpid());
+  return 0;
+}
