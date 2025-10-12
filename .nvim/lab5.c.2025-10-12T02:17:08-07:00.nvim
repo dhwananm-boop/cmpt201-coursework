@@ -1,0 +1,164 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define INF UINT64_MAX
+
+struct header {
+  uint64_t size;
+  struct header *next;
+  int id;
+};
+
+void initialize_block(struct header *block, uint64_t size, struct header *next,
+                      int id) {
+  block->size = size;
+  block->next = next;
+  block->id = id;
+}
+
+int find_first_fit(struct header *free_list_ptr, uint64_t size) {
+  struct header *current = free_list_ptr;
+  while (current != NULL) {
+    if (current->size >= size) {
+      return current->id;
+    }
+    current = current->next;
+  }
+  return -1;
+}
+
+int find_best_fit(struct header *free_list_ptr, uint64_t size) {
+  int best_fit_id = -1;
+  uint64_t min_sufficient_size = INF; 
+  struct header *current = free_list_ptr;
+
+  while (current != NULL) {
+    if (current->size >= size && current->size < min_sufficient_size) {
+      min_sufficient_size = current->size;
+      best_fit_id = current->id;
+    }
+    current = current->next;
+  }
+  return best_fit_id;
+}
+
+int find_worst_fit(struct header *free_list_ptr, uint64_t size) {
+  int worst_fit_id = -1;
+  uint64_t max_size = 0; 
+  struct header *current = free_list_ptr;
+
+  while (current != NULL) {
+    if (current->size >= size && current->size > max_size) {
+      max_size = current->size;
+      worst_fit_id = current->id;
+    }
+    current = current->next;
+  }
+  return worst_fit_id;
+}
+
+int main(void) {
+
+  struct header *free_block1 = (struct header *)malloc(sizeof(struct header));
+  struct header *free_block2 = (struct header *)malloc(sizeof(struct header));
+  struct header *free_block3 = (struct header *)malloc(sizeof(struct header));
+  struct header *free_block4 = (struct header *)malloc(sizeof(struct header));
+  struct header *free_block5 = (struct header *)malloc(sizeof(struct header));
+
+  initialize_block(free_block1, 6, free_block2, 1);
+  initialize_block(free_block2, 12, free_block3, 2);
+  initialize_block(free_block3, 24, free_block4, 3);
+  initialize_block(free_block4, 8, free_block5, 4);
+  initialize_block(free_block5, 4, NULL, 5);
+
+  struct header *free_list_ptr = free_block1;
+
+  int first_fit_id = find_first_fit(free_list_ptr, 7);
+  int best_fit_id = find_best_fit(free_list_ptr, 7);
+  int worst_fit_id = find_worst_fit(free_list_ptr, 7);
+
+  printf("The ID for First-Fit algorithm is: %d\n", first_fit_id);
+  printf("The ID for Best-Fit algorithm is: %d\n", best_fit_id);
+  printf("The ID for Worst-Fit algorithm is: %d\n", worst_fit_id);
+
+  free(free_block1);
+  free(free_block2);
+  free(free_block3);
+  free(free_block4);
+  free(free_block5);
+
+  return 0;
+}
+
+/*
+ * Part 2: Pseudo-code for Coalescing Contiguous Free Blocks
+ *
+ * ALGORITHM: Coalesce(newly_freed_block, free_list_head)
+ *
+ * ASSUMPTIONS:
+ * 1. We have a pointer to the header of the 'newly_freed_block'.
+ * 2. We can calculate the memory address of the block physically BEFORE
+ * the 'newly_freed_block' (e.g., from a footer or by pointer arithmetic).
+ * 3. We can calculate the memory address of the block physically AFTER
+ * the 'newly_freed_block'.
+ * 4. We can check if these adjacent blocks are currently in the free list.
+ *
+ * PSEUDO-CODE:
+ *
+ * FUNCTION Coalesce(newly_freed_block):
+ *
+ * // Find the block physically before the newly freed block
+ * prev_block = block_at(address_of(newly_freed_block) - size_of(prev_block))
+ * * // Find the block physically after the newly freed block
+ * next_block = block_at(address_of(newly_freed_block) + size_of(newly_freed_block))
+ *
+ * // Check if the adjacent blocks are free
+ * is_prev_free = Is_Block_In_Free_List(prev_block)
+ * is_next_free = Is_Block_In_Free_List(next_block)
+ *
+ * // CASE 1: Both neighbors are allocated.
+ * IF (is_prev_free IS FALSE) AND (is_next_free IS FALSE):
+ * // Add the newly freed block to the free list by itself.
+ * Add_To_Free_List(newly_freed_block)
+ *
+ * // CASE 2: Only the block AFTER is free.
+ * ELSE IF (is_prev_free IS FALSE) AND (is_next_free IS TRUE):
+ * // Merge newly_freed_block into next_block.
+ * // The new, larger block starts where newly_freed_block did.
+ * Remove_From_Free_List(next_block)
+ * newly_freed_block.size = newly_freed_block.size + next_block.size
+ * Add_To_Free_List(newly_freed_block)
+ *
+ * // CASE 3: Only the block BEFORE is free.
+ * ELSE IF (is_prev_free IS TRUE) AND (is_next_free IS FALSE):
+ * // Merge newly_freed_block into prev_block. No list changes needed.
+ * prev_block.size = prev_block.size + newly_freed_block.size
+ *
+ * // CASE 4: Both the block BEFORE and AFTER are free.
+ * ELSE IF (is_prev_free IS TRUE) AND (is_next_free IS TRUE):
+ * // Merge all three blocks into prev_block.
+ * Remove_From_Free_List(next_block)
+ * prev_block.size = prev_block.size + newly_freed_block.size + next_block.size
+ * * END FUNCTION
+ *
+ * 
+ * EXAMPLE:
+ *
+ * Considering the memory layout from the image in the Lab: [ ... | m | z | n | f | ... ]
+ *
+ * Let's assume block 'z' is the `newly_freed_block`.
+ *
+ * 1. The algorithm identifies 'm' as the `prev_block` and 'n' as the `next_block`.
+ *
+ * 2. It checks if 'm' and 'n' are free.
+ *
+ * If 'm' is allocated and 'n' is free, we hit CASE 2.
+ * The free list entry for 'n' is removed. The size of 'z' is updated to
+ * (original size of z + size of n). The `newly_freed_block` ('z') is then
+ * added to the free list as a single, larger block.
+ *
+ * If 'm' and 'n' are both free, we hit CASE 4.
+ * The free list entry for 'n' is removed. The size of 'm' (which is
+ * already in the free list) is updated to (size of m + size of z + size of n).
+ */
