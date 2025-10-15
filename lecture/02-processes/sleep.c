@@ -1,0 +1,8 @@
+#include <stdio.h>
+#include <unistd.h>
+
+int main() {
+  sleep(5);
+  printf("Slept for 5 seconds. Now Up and Fresh!\n");
+  return 0;
+}

@@ -1,0 +1,15 @@
+#include <stdio.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+int main() {
+  pid_t pid = fork();
+
+  if (pid == 0) {
+    execlp("ls", "ls", "-a", "-l", "-h", (char *)NULL);
+  } else {
+    execlp("ls", "ls", "-a", (char *)NULL);
+  }
+
+  return 0;
+}

@@ -1,0 +1,64 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct Node {
+  int data;
+  struct Node *Next;
+};
+
+// Create a new node with the given data
+struct Node *createNode(int data) {
+  struct Node *newNode = malloc(sizeof(*newNode));
+  newNode->data = data;
+  newNode->Next = NULL;
+  return newNode;
+}
+
+// Append a new node at the end of the linked list
+void append(struct Node **head, int data) {
+  if (*head == NULL) {
+    *head = createNode(data);
+  } else {
+    // Find end of list
+    struct Node *current = *head;
+    while (current->Next != NULL) {
+      current = current->Next;
+    }
+
+    // Append the new node
+    current->Next = createNode(data);
+  }
+}
+
+// Traverse and Print the linked list
+void tranverse(struct Node *head) {
+  struct Node *current = head;
+  while (current) {
+    printf("%d ", current->data);
+    current = current->Next;
+  }
+  printf("\n");
+}
+
+int main() {
+  struct Node *head = NULL;
+
+  append(&head, 1);
+  append(&head, 2);
+  append(&head, 3);
+
+  // Traverse linked list and print it
+  /*printf("Linked List: ");*/
+  /*traverse(head);*/
+  /**/
+  // Remember: free memory when done
+  struct Node *current = head;
+  while (current != NULL) {
+    struct Node *temp = current;
+    current = current->Next;
+    free(temp);
+  }
+
+  head = NULL;
+  return 0;
+}

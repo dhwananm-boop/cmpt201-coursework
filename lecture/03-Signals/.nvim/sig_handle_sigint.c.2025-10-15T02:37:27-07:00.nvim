@@ -1,0 +1,48 @@
+#define _POSIX_C_SOURCE_200809
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+static char *msg = "CTRL-C Pressed\n";
+void handle_sigint(int signum) { write(STDOUT_FILENO, msg, strlen(msg)); }
+
+int main() {
+
+  pid_t pid = fork();
+  if (pid == -1) {
+    perror("Unable to fork");
+    exit(EXIT_FAILURE);
+  }
+  if (pid == 0) {
+    while (1) {
+      sleep(2);
+      printf("HEY PARENT!\n");
+
+      if (kill(getppid(), SIGINT) == -1) {
+        perror("Unable to send signal to parent");
+        exit(EXIT_FAILURE);
+      }
+    }
+  }
+
+  if (pid != 0) {
+    struct sigaction act;
+    act.sa_handler = handle_sigint;
+    act.sa_flags = 0;
+    sigemptyset(&act.sa_mask);
+
+    // Registering a Signal Handler
+
+    if (sigaction(SIGINT, &act, NULL) == -1) {
+      perror("Sigaction() failed");
+      exit(EXIT_FAILURE);
+    }
+
+    while (1) {
+      sleep(1);
+    }
+  }
+}

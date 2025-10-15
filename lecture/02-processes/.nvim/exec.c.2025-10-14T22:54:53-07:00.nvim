@@ -1,0 +1,11 @@
+#include<stdio.h>
+#include<unistd.h>
+#include<sys/types.h>
+
+int main()
+{
+  printf("Hello. This P1");
+  fork();
+  execl("/bin/echo", "/bin/echo", "Yes!", "No!");
+  printf("This might not get executed");
+}
