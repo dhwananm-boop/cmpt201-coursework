@@ -1,0 +1,438 @@
+/*
+-------------------------------------------------------------------------------
+File 1: client.c
+-------------------------------------------------------------------------------
+*/
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#define PORT 8001
+#define BUF_SIZE 1024
+#define ADDR "127.0.0.1"
+
+#define handle_error(msg)                                                      \
+  do {                                                                         \
+    perror(msg);                                                               \
+    exit(EXIT_FAILURE);                                                        \
+  } while (0)
+
+#define NUM_MSG 5
+
+static const char *messages[NUM_MSG] = {"Hello", "Apple", "Car", "Green",
+                                        "Dog"};
+
+int client_main() {
+  int sfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sfd == -1) {
+    handle_error("socket");
+  }
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(struct sockaddr_in));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(PORT);
+  if (inet_pton(AF_INET, ADDR, &addr.sin_addr) <= 0) {
+    handle_error("inet_pton");
+  }
+
+  if (connect(sfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    handle_error("connect");
+  }
+
+  printf("Client connected to %s:%d\n", ADDR, PORT);
+
+  char buf[BUF_SIZE];
+  for (int i = 0; i < NUM_MSG; i++) {
+    sleep(1);
+    // prepare message
+    // this pads the desination with NULL
+    strncpy(buf, messages[i], BUF_SIZE);
+
+    if (write(sfd, buf, BUF_SIZE) == -1) {
+      handle_error("write");
+    } else {
+      printf("Client sent: %s\n", messages[i]);
+    }
+  }
+
+  close(sfd);
+  return 0;
+}
+
+/*
+-------------------------------------------------------------------------------
+File 2: server.c
+-------------------------------------------------------------------------------
+*/
+
+/*
+Questions to answer at top of server.c:
+(You should not need to change client.c)
+Understanding the Client:
+1. How is the client sending data to the server? What protocol?
+Ans) The client is sending data using the TCP/IP protocol. It establishes a
+stream socket (`SOCK_STREAM`) connection to the server's IP address (127.0.0.1)
+and port (8001), and then uses the `write()` system call to send data over the
+connected socket.
+
+2. What data is the client sending to the server?
+Ans)  The client sends a series of fixed-size buffers (1024 bytes, defined by
+`BUF_SIZE`). Each buffer contains one of five strings ("Hello", "Apple", "Car",
+"Green", "Dog") followed by zero padding. The client sends 5 messages in total.
+
+Understanding the Server:
+1. Explain the argument that the `run_acceptor` thread is passed as an argument.
+Ans)  The run_acceptor thread is passed a pointer to a struct acceptor_args.
+This structure contains three fields:
+
+   i.   atomic_bool run: A flag used to signal the thread when it should stop
+running.
+
+   ii.  struct list_handle *list_handle: A pointer to the shared message list
+structure where received messages are stored.
+
+  iii. pthread_mutex_t *list_lock: A pointer to the mutex used to protect the
+shared list structure from data races.
+
+2. How are received messages stored?
+Ans)  Received messages are stored in a singly linked list. Each message is
+copied into a dynamically allocated buffer and attached to a struct list_node.
+The list itself is managed by a struct list_handle which points to the last node
+to facilitate efficient appending.
+
+3. What does `main()' do with the received messages?
+Ans)   The main() function first ensures that the server has received the
+required total number of messages. It then calls collect_all(), which iterates
+through the linked list, prints the content of each received message, frees the
+dynamically allocated memory for the message data and the node itself, and
+finally, prints the total number of collected messages.
+
+4. How are threads used in this sample code?
+Ans)   Two types of threads are used:
+
+   i. One Acceptor Thread (run_acceptor): Listens for incoming client
+connections and, upon a successful connection, creates a new Client Handler
+Thread.
+
+   ii. Multiple Client Handler Threads: One thread is created for each connected
+client. Each thread's sole purpose is to continuously read data from its
+assigned client socket and store received messages into the shared linked list.
+
+Explain the use of non-blocking sockets in this lab.
+How are sockets made non-blocking?
+Ans)   Sockets are made non-blocking using the `set_non_blocking()` function,
+which internally uses the `fcntl()` system call to set the `O_NONBLOCK` flag on
+the file descriptor.
+
+What sockets are made non-blocking?
+Ans)   The listening server socket (sfd) created in init_server_socket() and
+passed to run_acceptor, and all client connection sockets (cfd) accepted by
+run_acceptor and passed to run_client threads.
+
+Why are these sockets made non-blocking? What purpose does it serve?
+
+Ans)
+
+   i. Listening Socket (sfd): It is made non-blocking so that the accept() call
+inside the run_acceptor loop does not block indefinitely if no clients are
+connecting. This allows the acceptor thread to frequently check its run flag and
+exit the loop gracefully when requested by main(), which is necessary for clean
+thread shutdown.
+
+   ii. Client Sockets (cfd): They are made non-blocking so that the read() call
+inside the run_client loop does not block indefinitely when no data is available
+from the client. This allows the client thread to frequently check its run flag
+and exit gracefully when requested by run_acceptor. In both cases, non-blocking
+I/O is used to prevent threads from being permanently stuck on an I/O operation,
+enabling responsive control flow and clean shutdown.
+*/
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <time.h> // For nanosleep in busy wait
+#include <unistd.h>
+
+#define BUF_SIZE 1024
+#define PORT 8001
+#define LISTEN_BACKLOG 32
+#define MAX_CLIENTS 4
+#define NUM_MSG_PER_CLIENT 5
+// Total messages expected: 4 clients * 5 messages/client = 20
+#define TOTAL_EXPECTED_MESSAGES (MAX_CLIENTS * NUM_MSG_PER_CLIENT)
+
+#define handle_error(msg)                                                      \
+  do {                                                                         \
+    perror(msg);                                                               \
+    exit(EXIT_FAILURE);                                                        \
+  } while (0)
+
+struct list_node {
+  struct list_node *next;
+  void *data;
+};
+
+struct list_handle {
+  struct list_node *last;
+  volatile uint32_t count;
+};
+
+struct client_args {
+  atomic_bool run;
+
+  int cfd;
+  struct list_handle *list_handle;
+  pthread_mutex_t *list_lock;
+  pthread_t thread_id; // Store the thread ID for joining later
+};
+
+struct acceptor_args {
+  atomic_bool run;
+
+  struct list_handle *list_handle;
+  pthread_mutex_t *list_lock;
+};
+
+int init_server_socket() {
+  struct sockaddr_in addr;
+
+  int sfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sfd == -1) {
+    handle_error("socket");
+  }
+
+  // Allow reuse of the address and port (useful when restarting server quickly)
+  int optval = 1;
+  if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+    perror("setsockopt");
+  }
+
+  memset(&addr, 0, sizeof(struct sockaddr_in));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(PORT);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  if (bind(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in)) == -1) {
+    handle_error("bind");
+  }
+
+  if (listen(sfd, LISTEN_BACKLOG) == -1) {
+    handle_error("listen");
+  }
+
+  return sfd;
+}
+
+// Set a file descriptor to non-blocking mode
+void set_non_blocking(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags == -1) {
+    perror("fcntl F_GETFL");
+    exit(EXIT_FAILURE);
+  }
+  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+    perror("fcntl F_SETFL");
+    exit(EXIT_FAILURE);
+  }
+}
+
+void add_to_list(struct list_handle *list_handle, struct list_node *new_node) {
+  struct list_node *last_node = list_handle->last;
+  last_node->next = new_node;
+  list_handle->last = new_node;
+  list_handle->count++;
+}
+
+int collect_all(struct list_node head) {
+  struct list_node *node = head.next; // get first node after head
+  uint32_t total = 0;
+
+  while (node != NULL) {
+    // Print message, using type-cast to char* for printing
+    printf("Collected: %s\n", (char *)node->data);
+    total++;
+
+    // Free node and advance to next item
+    struct list_node *next = node->next;
+    free(node->data);
+    free(node);
+    node = next;
+  }
+
+  return total;
+}
+
+static void *run_client(void *args) {
+  struct client_args *cargs = (struct client_args *)args;
+  int cfd = cargs->cfd;
+  set_non_blocking(cfd);
+
+  char msg_buf[BUF_SIZE];
+
+  while (atomic_load(&cargs->run)) {
+    ssize_t bytes_read = read(cfd, &msg_buf, BUF_SIZE);
+    if (bytes_read == -1) {
+      if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
+        perror("Problem reading from socket!\n");
+        break;
+      }
+    } else if (bytes_read > 0) {
+      struct list_node *new_node = malloc(sizeof(struct list_node));
+      if (!new_node)
+        handle_error("malloc list_node");
+
+      new_node->next = NULL;
+      new_node->data = malloc(BUF_SIZE);
+      if (!new_node->data)
+        handle_error("malloc data");
+
+      memcpy(new_node->data, msg_buf, BUF_SIZE);
+
+      pthread_mutex_lock(cargs->list_lock);
+
+      add_to_list(cargs->list_handle, new_node);
+
+      pthread_mutex_unlock(cargs->list_lock);
+
+    } else if (bytes_read == 0) {
+      break;
+    }
+    struct timespec ts = {0, 1000000}; // 1ms
+    nanosleep(&ts, NULL);
+  }
+
+  if (close(cfd) == -1) {
+    perror("client thread close");
+  }
+  return NULL;
+}
+
+static void *run_acceptor(void *args) {
+  int sfd = init_server_socket();
+  set_non_blocking(sfd);
+
+  struct acceptor_args *aargs = (struct acceptor_args *)args;
+  struct client_args client_args[MAX_CLIENTS];
+
+  printf("Accepting clients...\n");
+
+  uint16_t num_clients = 0;
+  while (atomic_load(&aargs->run)) {
+    if (num_clients < MAX_CLIENTS) {
+      int cfd = accept(sfd, NULL, NULL);
+      if (cfd == -1) {
+        if (!(errno == EAGAIN || errno == EWOULDBLOCK)) {
+          handle_error("accept");
+        }
+      } else {
+        printf("Client connected!\n");
+
+        client_args[num_clients].cfd = cfd;
+        atomic_store(&client_args[num_clients].run, true);
+        client_args[num_clients].list_handle = aargs->list_handle;
+        client_args[num_clients].list_lock = aargs->list_lock;
+
+        int s = pthread_create(&client_args[num_clients].thread_id, NULL,
+                               run_client, &client_args[num_clients]);
+        if (s != 0) {
+          errno = s; 
+          handle_error("pthread_create");
+        }
+
+        num_clients++;
+      }
+    }
+    struct timespec ts = {0, 1000000}; // 1ms
+    nanosleep(&ts, NULL);
+  }
+
+  printf("Not accepting any more clients!\n");
+
+  // Shutdown and cleanup
+  for (int i = 0; i < num_clients; i++) {
+    printf("Shutting down client thread %d...\n", i);
+
+    atomic_store(&client_args[i].run, false);
+
+    pthread_join(client_args[i].thread_id, NULL);
+  }
+
+  if (close(sfd) == -1) {
+    perror("closing server socket");
+  }
+  return NULL;
+}
+
+int main() {
+
+  pthread_mutex_t list_mutex;
+  if (pthread_mutex_init(&list_mutex, NULL) != 0) {
+    handle_error("mutex_init");
+  }
+
+  // List to store received messages
+  // - Do not free list head (not dynamically allocated)
+  struct list_node head = {NULL, NULL};
+  struct list_handle list_handle = {
+      .last = &head,
+      .count = 0,
+  };
+
+  pthread_t acceptor_thread;
+  struct acceptor_args aargs = {
+      .run = true,
+      .list_handle = &list_handle,
+      .list_lock = &list_mutex,
+  };
+  if (pthread_create(&acceptor_thread, NULL, run_acceptor, &aargs) != 0) {
+    handle_error("pthread_create acceptor");
+  }
+
+  uint32_t received_count = 0;
+  printf("Waiting for %d messages...\n", TOTAL_EXPECTED_MESSAGES);
+
+  while (received_count < TOTAL_EXPECTED_MESSAGES) {
+    pthread_mutex_lock(&list_mutex);
+    received_count = list_handle.count;
+    pthread_mutex_unlock(&list_mutex);
+
+    if (received_count < TOTAL_EXPECTED_MESSAGES) {
+      struct timespec ts = {0, 100000000}; // 100ms
+      nanosleep(&ts, NULL);
+    }
+  }
+
+  atomic_store(&aargs.run, false);
+  pthread_join(acceptor_thread, NULL);
+
+  if (list_handle.count != TOTAL_EXPECTED_MESSAGES) {
+    printf("Not enough messages were received! Expected %d, Got %u\n",
+           TOTAL_EXPECTED_MESSAGES, list_handle.count);
+    return 1;
+  }
+
+  int collected = collect_all(head);
+  printf("Collected: %d\n", collected);
+  if (collected != list_handle.count) {
+    printf("Not all messages were collected! Expected %u, Collected %d\n",
+           list_handle.count, collected);
+    return 1;
+  } else {
+    printf("All messages were collected!\n");
+  }
+
+  // Destroy the mutex
+  pthread_mutex_destroy(&list_mutex);
+
+  return 0;
+}
